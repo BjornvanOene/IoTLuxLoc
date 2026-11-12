@@ -15,11 +15,17 @@ const byte DNS_PORT = 53;
 
 const int ARM_PIN = 25;
 const int MOVEMENT_PIN = 33;
-const int RESET_PIN = 32;
+const int WAKE_PIN = 27;
 
-const unsigned long WIFI_WINDOW_MS = 15000;
-const uint64_t SLEEP_TIME_US = 90ULL * 1000000ULL;
-const unsigned long RESET_DURATION_MS = 200;
+const unsigned long WIFI_WINDOW_MS = 30000;
+const unsigned long ARM_PULSE_MS = 200;
+
+unsigned long armStartTime = 0;
+bool armPulseActive = false;
+
+const uint64_t WAKEUP_PIN_MASK =
+    (1ULL << MOVEMENT_PIN) |
+    (1ULL << WAKE_PIN);
 
 // Global variables
 WebServer server(80);
@@ -27,9 +33,7 @@ DNSServer dnsServer;
 
 bool isArmed = false;
 bool alarmTriggered = false;
-bool resetActive = false;
 
-unsigned long resetStartTime = 0;
 unsigned long wifiWindowStart = 0;
 
 double bikeLatitude = 0.0;
@@ -606,18 +610,18 @@ void handleStatus() {
 }
 
 void handleArm() {
-  // GPIO 25 HIGH while armed
-  pinMode(ARM_PIN, OUTPUT);
+  Serial.println("HTTP ARM REQUEST RECEIVED");
+  // Start the 200 ms ARM pulse
   digitalWrite(ARM_PIN, HIGH);
+  armStartTime = millis();
+  armPulseActive = true;
 
   isArmed = true;
   alarmTriggered = false;
 
   wifiWindowStart = millis();
 
-  Serial.println("Alarm ARMED");
-  Serial.printf("GPIO 25 output register: %d\n",
-                digitalRead(ARM_PIN));
+  Serial.println("Alarm ARMED - pulse started");
 
   server.send(
     200,
@@ -627,15 +631,13 @@ void handleArm() {
 }
 
 void handleDisarm() {
-  digitalWrite(ARM_PIN, LOW);
-
+  Serial.println("HTTP DISARM REQUEST RECEIVED");
   isArmed = false;
   alarmTriggered = false;
 
-  // Start the 200 ms reset pulse
-  digitalWrite(RESET_PIN, HIGH);
-  resetStartTime = millis();
-  resetActive = true;
+  digitalWrite(ARM_PIN, HIGH);
+  armStartTime = millis();
+  armPulseActive = true;
 
   Serial.println("Alarm DISARMED");
   Serial.println("External reset pulse started");
@@ -667,47 +669,53 @@ void handleLocation() {
 
 // DEEP SLEEP 
 
+
 void enterDeepSleep() {
-  // Do not sleep while movement input is HIGH
-  if (digitalRead(MOVEMENT_PIN) == HIGH) {
+
+  // Never sleep while ARM or RESET pulse is active
+  if (armPulseActive) {
     return;
   }
 
-  // Do not interrupt the reset pulse
-  if (resetActive) {
+  // Both wake-up inputs must be LOW before sleeping
+  if (digitalRead(MOVEMENT_PIN) == HIGH ||
+      digitalRead(WAKE_PIN) == HIGH) {
     return;
   }
 
-  Serial.println("Entering deep sleep for 90 seconds");
+  Serial.println("LuxLoc entering deep sleep");
 
-  // Save state in RTC memory
+  // Save alarm state in RTC memory
   storedArmed = isArmed;
   storedAlarm = alarmTriggered;
   rtcMagic = RTC_MAGIC_VALUE;
 
-  // GPIO 25 must remain HIGH while sleeping
-  digitalWrite(ARM_PIN, HIGH);
+  // GPIO 25 is now a pulse output
+  // Make sure it is LOW before sleeping
+  digitalWrite(ARM_PIN, LOW);
 
-  // Latch GPIO 25 output
-  if (gpio_hold_en(GPIO_NUM_25) != ESP_OK) {
-    Serial.println("GPIO hold failed, cancelling sleep");
+
+  // Configure wake-up on GPIO 33 or GPIO 27
+  esp_err_t result = esp_sleep_enable_ext1_wakeup(
+      WAKEUP_PIN_MASK,
+      ESP_EXT1_WAKEUP_ANY_HIGH
+  );
+
+  if (result != ESP_OK) {
+    Serial.printf(
+      "EXT1 wake-up configuration failed: %d\n",
+      result
+    );
     return;
   }
 
-  gpio_deep_sleep_hold_en();
-
-  // Enable movement wake-up
-  rtc_gpio_pullup_dis(GPIO_NUM_33);
-  rtc_gpio_pulldown_en(GPIO_NUM_33);
-
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 1);
-
-  // Enable 90-second timer wake-up
-  esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
-
+  Serial.println("Waiting for GPIO 33 or GPIO 27");
   Serial.flush();
+
+  // Enter deep sleep
   esp_deep_sleep_start();
 }
+
 
 // SETUP
 
@@ -715,48 +723,49 @@ void setup() {
   Serial.begin(19200);
   delay(100);
 
-  esp_sleep_wakeup_cause_t wakeReason =
+
+esp_sleep_wakeup_cause_t wakeReason =
     esp_sleep_get_wakeup_cause();
 
-  bool wokeFromSleep =
-    wakeReason == ESP_SLEEP_WAKEUP_TIMER ||
-    wakeReason == ESP_SLEEP_WAKEUP_EXT0;
+bool wokeFromSleep =
+    wakeReason == ESP_SLEEP_WAKEUP_EXT1;
 
-  bool restoreArmed =
+uint64_t wakePins = 0;
+
+if (wokeFromSleep) {
+    wakePins = esp_sleep_get_ext1_wakeup_status();
+}
+
+bool restoreState =
     wokeFromSleep &&
-    rtcMagic == RTC_MAGIC_VALUE &&
-    storedArmed;
+    rtcMagic == RTC_MAGIC_VALUE;
 
-  isArmed = restoreArmed;
-  alarmTriggered = restoreArmed && storedAlarm;
+isArmed = restoreState ? storedArmed : false;
+alarmTriggered = restoreState ? storedAlarm : false;
 
-  // Restore GPIO 25 before releasing its hold.
-  // Avoid deliberately pulling it LOW on wake.
-  gpio_set_direction(GPIO_NUM_25, GPIO_MODE_OUTPUT);
-  gpio_set_level(GPIO_NUM_25, restoreArmed ? 1 : 0);
+if (wakePins & (1ULL << MOVEMENT_PIN)) {
+    Serial.println("WAKE: Alarm input");
 
-  gpio_deep_sleep_hold_dis();
-  gpio_hold_dis(GPIO_NUM_25);
+    if (isArmed) {
+        alarmTriggered = true;
+    }
+}
 
-  digitalWrite(ARM_PIN, isArmed ? HIGH : LOW);
+if (wakePins & (1ULL << WAKE_PIN)) {
+    Serial.println("WAKE: External microcontroller");
+}
 
-  // GPIO 32 normally LOW
-  digitalWrite(RESET_PIN, LOW);
-  pinMode(RESET_PIN, OUTPUT);
 
-  // Restore GPIO 33 from RTC use
+  // ARM output normally LOW
+  pinMode(ARM_PIN, OUTPUT);
+  digitalWrite(ARM_PIN, LOW);
+
+  // Restore GPIO 33 & 27 from RTC use
   rtc_gpio_deinit(GPIO_NUM_33);
-  pinMode(MOVEMENT_PIN, INPUT_PULLDOWN);
+  rtc_gpio_deinit(GPIO_NUM_27);
 
-  if (wakeReason == ESP_SLEEP_WAKEUP_EXT0 &&
-      isArmed) {
-    alarmTriggered = true;
-    Serial.println("WAKE: GPIO 33 movement detected");
-  } else if (wakeReason == ESP_SLEEP_WAKEUP_TIMER) {
-    Serial.println("WAKE: 90-second timer");
-  } else {
-    Serial.println("Normal power-on/reset");
-  }
+  pinMode(MOVEMENT_PIN, INPUT);
+  pinMode(WAKE_PIN, INPUT);
 
   checkMovement();
 
@@ -809,38 +818,29 @@ void loop() {
 
   checkMovement();
 
-  // Maintain ARM output while awake
-  digitalWrite(ARM_PIN, isArmed ? HIGH : LOW);
+  // Finish the 200 ms ARM pulse
+  if (armPulseActive &&
+      millis() - armStartTime >= ARM_PULSE_MS) {
 
-  // Finish momentary reset pulse
-  if (resetActive &&
-      millis() - resetStartTime >= RESET_DURATION_MS) {
+    digitalWrite(ARM_PIN, LOW);
+    armPulseActive = false;
 
-    digitalWrite(RESET_PIN, LOW);
-    resetActive = false;
-
-    Serial.println("External reset pulse complete");
+    Serial.println("ARM pulse complete");
   }
 
-  // No sleep when disarmed
-  if (!isArmed) {
-    return;
-  }
 
-  // Keep Wi-Fi on while a client is connected
-  if (WiFi.softAPgetStationNum() > 0) {
+// Keep Wi-Fi active while a phone is connected
+if (WiFi.softAPgetStationNum() > 0) {
     wifiWindowStart = millis();
     return;
-  }
+}
 
-  // Remain awake while movement input is HIGH
-  if (digitalRead(MOVEMENT_PIN) == HIGH) {
-    wifiWindowStart = millis();
+// Give the user 15 seconds to connect
+if (millis() - wifiWindowStart < WIFI_WINDOW_MS) {
     return;
-  }
+}
 
-  // Check the 15-second awake window
-  if (millis() - wifiWindowStart >= WIFI_WINDOW_MS) {
-    enterDeepSleep();
-  }
+// Return to sleep when both wake inputs are LOW
+enterDeepSleep();
+
 }
