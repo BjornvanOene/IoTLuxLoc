@@ -13,8 +13,6 @@
 #define GREEN_PIN 8
 #define BLUE_PIN  7
 
-#define ARM_PIN   5
-#define RESET_PIN 6
 #define ALARM_OUT 4
 
 #define COMMON_ANODE false
@@ -65,6 +63,12 @@ unsigned int sampleCount = 0;
 
 uint8_t colorIndex = 0;
 
+// False = Disarmed
+// True  = Armed
+bool systemArmed = false;
+
+// Set true when TTN requests alarm reset
+bool resetRequested = false;
 
 // ======================================
 // WRITE MPU REGISTER
@@ -109,6 +113,27 @@ bool readAcceleration(float &ax, float &ay, float &az) {
   az = azRaw / 16384.0;
 
   return true;
+}
+
+// TTN Functions for setting states
+// Call this when TTN sends ARM/DISARM
+void setArmedFromTTN(bool armed) {
+
+  systemArmed = armed;
+
+  if (armed) {
+    Serial.println("TTN command: ARM");
+  } else {
+    Serial.println("TTN command: DISARM");
+  }
+}
+
+// Call this when TTN sends RESET
+void requestResetFromTTN() {
+
+  resetRequested = true;
+
+  Serial.println("TTN command: RESET");
 }
 
 
