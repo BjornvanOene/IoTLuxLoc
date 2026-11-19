@@ -35,8 +35,8 @@
 // TTN SETTINGS
 // Replace with your own OTAA credentials.
 // AppEUI is called JoinEUI in newer TTN consoles.
-const char *appEui = "7ECB614D35B14E46";
-const char *appKey = "5B404939E7A090EFF3E6D63E340742AD";
+const char *appEui = "07C4D5459470B67C";
+const char *appKey = "0E8E0A9532F584F20FD0D3DD3DB1B10C";
 
 // Periodic status uplink every 60 seconds
 #define UPLINK_INTERVAL 60000UL
