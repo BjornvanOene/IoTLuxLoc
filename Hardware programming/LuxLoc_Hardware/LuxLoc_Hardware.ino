@@ -245,7 +245,12 @@ void activateAlarm() {
 // ======================================
 void setup() {
 
-  // Configure outputs
+  Serial.begin(9600);
+  delay(1000);
+
+  Serial.println("Arduino started!");
+  Serial.println("Starting initialization...");
+
   digitalWrite(ALARM_OUT, LOW);
   pinMode(ALARM_OUT, OUTPUT);
 
@@ -253,26 +258,26 @@ void setup() {
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT);
 
-  // Configure inputs
   pinMode(ARM_PIN, INPUT);
   pinMode(RESET_PIN, INPUT);
 
   setRGB(0, 0, 0);
 
-  Serial.begin(9600);
+  Serial.println("Initializing I2C...");
+
   myWire.begin();
 
-  delay(1000);
+  Serial.println("I2C initialized.");
 
-  // Wake up MPU
+  Serial.println("Waking MPU6050...");
   writeRegister(0x6B, 0x00);
-  delay(100);
 
-  // Accelerometer +/- 2g
+  Serial.println("Configuring accelerometer...");
   writeRegister(0x1C, 0x00);
 
-  state = PASSIVE;
+  Serial.println("MPU6050 setup completed.");
 
+  state = PASSIVE;
   previousResetState = digitalRead(RESET_PIN);
 
   Serial.println("Bike theft system initialized");
