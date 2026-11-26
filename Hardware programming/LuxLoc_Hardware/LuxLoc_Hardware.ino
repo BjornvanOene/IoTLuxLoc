@@ -1,5 +1,4 @@
-
-#include <SoftwareWire.h>
+ #include <SoftwareWire.h>
 #include <SoftwareSerial.h>
 #include <rn2xx3.h>
 #include <math.h>
@@ -39,10 +38,10 @@
 // TTN SETTINGS
 // Replace with your own OTAA credentials.
 // AppEUI is called JoinEUI in newer TTN consoles.
-const char *appEui = "CAE28D0314356EB5";
-const char *appKey = "7F65D710F50298B5EFCFA254A00F086C";
+const char *appEui = "07C4D5459470B67C";
+const char *appKey = "0E8E0A9532F584F20FD0D3DD3DB1B10C";
 
-// Periodic status uplink every 60 seconds
+// Periodic status uplink every 60 seconds 
 #define UPLINK_INTERVAL 60000UL
 
 // Retry joining every 60 seconds
@@ -103,6 +102,8 @@ bool resetRequested = false;
 bool alarmOut = false;
 
 bool ttnJoined = false;
+bool radioReady = false;
+bool otaaConfigured = false;
 bool alarmNotificationPending = false;
 
 // MPU6050 FUNCTIONS
@@ -115,7 +116,7 @@ void writeRegister(uint8_t reg, uint8_t value) {
   uint8_t result = myWire.endTransmission();
 
   if (result != 0) {
-    Serial.print("MPU write error: ");
+    Serial.print(F("MPU write error: "));
     Serial.println(result);
   }
 }
@@ -227,9 +228,9 @@ void setArmedFromTTN(bool armed) {
   systemArmed = armed;
 
   if (armed) {
-    Serial.println("TTN command: ARM");
+    Serial.println(F("TTN command: ARM"));
   } else {
-    Serial.println("TTN command: DISARM");
+    Serial.println(F("TTN command: DISARM"));
     resetRequested = true;
     alarmNotificationPending = false;
   }
@@ -242,11 +243,11 @@ void startAlarmTTN(bool active) {
   if (alarmOut) {
         // Activate Piezo buzzer
     tone(BUZZER_PIN, BUZZER_FREQUENCY);
-    Serial.println("TTN command: Alarm started");
+    Serial.println(F("TTN command: Alarm started"));
   } else {
     noTone(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
-    Serial.println("TTN command: No Alarm");
+    Serial.println(F("TTN command: No Alarm"));
   }
 }
 
@@ -254,7 +255,7 @@ void requestResetFromTTN() {
 
   resetRequested = true;
 
-  Serial.println("TTN command: RESET");
+  Serial.println(F("TTN command: RESET"));
 }
 
 void resetMeasurements() {
@@ -275,7 +276,7 @@ void enterPassive() {
   startAlarmTTN(false);
   resetMeasurements();
 
-  Serial.println("System PASSIVE");
+  Serial.println(F("System PASSIVE"));
 }
 
 void enterMonitoring() {
@@ -287,7 +288,7 @@ void enterMonitoring() {
 
   resetMeasurements();
 
-  Serial.println("System ARMED - Monitoring");
+  Serial.println(F("System ARMED - Monitoring"));
 }
 
 void activateAlarm() {
@@ -305,9 +306,9 @@ void activateAlarm() {
   // Queue alarm notification for TTN
   alarmNotificationPending = true;
 
-  Serial.println("WARNING: POSSIBLE BIKE THEFT!");
-  Serial.println("ALARM ACTIVATED!");
-  Serial.println("TTN alarm notification pending");
+  Serial.println(F("WARNING: POSSIBLE BIKE THEFT!"));
+  Serial.println(F("ALARM ACTIVATED!"));
+  Serial.println(F("TTN alarm notification pending"));
 }
 
 // TTN DOWNLINK HANDLING (CBOR encoded as HEX)
@@ -374,26 +375,26 @@ public:
 
 void handleDownlink(String received) {
   received.trim(); received.toUpperCase();
-  Serial.print("TTN downlink HEX: "); Serial.println(received);
+  Serial.print(F("TTN downlink HEX: ")); Serial.println(received);
   // Keep support for the original one-byte commands.
   if(received=="01") { setArmedFromTTN(true); return; }
   if(received=="00") { setArmedFromTTN(false); return; }
   if(received=="02") { requestResetFromTTN(); return; }
   uint8_t bytes[64];
   size_t n=received.length();
-  if(!n || n%2 || n/2>sizeof(bytes)) { Serial.println("Invalid HEX length"); return; }
+  if(!n || n%2 || n/2>sizeof(bytes)) { Serial.println(F("Invalid HEX length")); return; }
   for(size_t i=0;i<n/2;i++) {
     int a=hexDigit(received[2*i]), b=hexDigit(received[2*i+1]);
-    if(a<0 || b<0) { Serial.println("Invalid HEX"); return; }
+    if(a<0 || b<0) { Serial.println(F("Invalid HEX")); return; }
     bytes[i]=(a<<4)|b;
   }
   CommandReader reader(bytes,n/2);
   uint64_t count; char key[16]; bool value;
   if(!reader.map(count) || count!=1 || !reader.key(key,sizeof(key))) {
-    Serial.println("Invalid CBOR command"); return;
+    Serial.println(F("Invalid CBOR command")); return;
   }
   if(!strcmp(key,"Lock") || !strcmp(key,"Alarm") || !strcmp(key,"AlarmOFF")) {
-    if(!reader.boolean(value) || !reader.done()) { Serial.println("Invalid boolean command"); return; }
+    if(!reader.boolean(value) || !reader.done()) { Serial.println(F("Invalid boolean command")); return; }
     if(!strcmp(key,"Lock")) setArmedFromTTN(value);
     else if(!strcmp(key,"Alarm") && value) {
       // Remote alarm works even when unlocked; lock state is preserved.
@@ -403,107 +404,137 @@ void handleDownlink(String received) {
     return;
   }
   if (strcmp(key,"Colour") && strcmp(key,"value")) {
-    Serial.println("Unknown command"); return;
+    Serial.println(F("Unknown command")); return;
   }
   if (!reader.map(count) || count != 3) {
-    Serial.println("Invalid colour object"); return;
+    Serial.println(F("Invalid colour object")); return;
   }
   double values[3]={0,0,0}; unsigned seen=0;
   for(unsigned i=0;i<count;i++) {
     char field[16]; double v;
-    if(!reader.key(field,sizeof(field)) || !reader.number(v)) { Serial.println("Invalid colour field"); return; }
+    if(!reader.key(field,sizeof(field)) || !reader.number(v)) { Serial.println(F("Invalid colour field")); return; }
     int index=-1;
     if(!strcmp(field,"r")) index=0;
     if(!strcmp(field,"g")) index=1;
     if(!strcmp(field,"b")) index=2;
-    if(index<0 || (seen&(1U<<index))) { Serial.println("Unexpected colour field"); return; }
-    if(v<0 || v>255 || floor(v)!=v) { Serial.println("Invalid RGB"); return; }
+    if(index<0 || (seen&(1U<<index))) { Serial.println(F("Unexpected colour field")); return; }
+    if(v<0 || v>255 || floor(v)!=v) { Serial.println(F("Invalid RGB")); return; }
     seen|=1U<<index; values[index]=v;
   }
-  if(!reader.done()) { Serial.println("Trailing CBOR data"); return; }
+  if(!reader.done()) { Serial.println(F("Trailing CBOR data")); return; }
   colourR=(uint8_t)values[0]; colourG=(uint8_t)values[1]; colourB=(uint8_t)values[2];
   if(state!=ALARM) setRGB(colourR>=128,colourG>=128,colourB>=128);
-  Serial.println("Colour updated");
+  Serial.println(F("Colour updated"));
 }
 
 // INITIALIZE RN2483 HARDWARE
-void initializeRadioHardware() {
+bool initializeRadioHardware() {
 
-  Serial.println("Initializing RN2483...");
+    Serial.println(F("Initializing RN2483..."));
 
-  // Hardware reset (active LOW)
-  pinMode(LORA_RESET_PIN, OUTPUT);
+    loraSerial.begin(9600);
+    loraSerial.listen();
 
-  digitalWrite(LORA_RESET_PIN, LOW);
-  delay(500);
+    pinMode(LORA_RESET_PIN, OUTPUT);
 
-  digitalWrite(LORA_RESET_PIN, HIGH);
-  delay(200);
+    digitalWrite(LORA_RESET_PIN, LOW);
+    delay(500);
 
-  // Clear any startup bytes
-  while (loraSerial.available()) {
-    loraSerial.read();
-  }
+    digitalWrite(LORA_RESET_PIN, HIGH);
+    delay(1500);
 
-  // Synchronize UART baud rate
-  myLora.autobaud();
+    while (loraSerial.available()) {
+        loraSerial.read();
+    }
 
-  String hweui = myLora.hweui();
-  hweui.trim();
+    myLora.autobaud();
+    delay(200);
 
-  Serial.print("RN2483 HWEUI: ");
-  Serial.println(hweui);
+    String hweui = myLora.hweui();
+    hweui.trim();
 
-  if (hweui.length() != 16) {
-    Serial.println("RN2483 communication failed");
-    return;
-  }
+    Serial.print(F("RN2483 HWEUI: "));
+    Serial.println(hweui);
 
-  Serial.println("RN2483 detected");
-  Serial.println(myLora.sysver());
+    if (hweui.length() != 16) {
+        Serial.println(F("RN2483 communication failed"));
+        return false;
+    }
+
+    Serial.println(F("RN2483 detected"));
+
+    Serial.print(F("Firmware: "));
+    Serial.println(myLora.sysver());
+
+    return true;
 }
 
 // JOIN TTN NETWORK
 void joinTTN() {
-
   lastJoinAttempt = millis();
+  if (!radioReady) {
+    radioReady = initializeRadioHardware();
+    otaaConfigured = false;
+    if (!radioReady) {
+      lastJoinAttempt = millis();
+      return;
+    }
+  }
 
-  if (strlen(appEui) != 16 ||
-      strlen(appKey) != 32) {
-
-    Serial.println(
-      "ERROR: Configure TTN OTAA keys"
-    );
+  if (strlen(appEui) != 16 || strlen(appKey) != 32) {
+    Serial.println(F("ERROR: Configure TTN OTAA keys"));
     return;
   }
 
-  Serial.println("Attempting TTN join...");
+  loraSerial.listen();
+  Serial.println(F("Attempting TTN join..."));
+  Serial.flush();
 
-  bool result = myLora.initOTAA(
-    appEui,
-    appKey
-  );
+  bool result;
+  if (!otaaConfigured) {
+    result = myLora.initOTAA(appEui, appKey);
+    Serial.print(F("Join result: "));
+Serial.println(result);
+
+Serial.print(F("MAC status: "));
+Serial.println(myLora.sendRawCommand("mac get status"));
+
+Serial.print(F("Device address: "));
+Serial.println(myLora.sendRawCommand("mac get devaddr"));
+
+Serial.print(F("RX2 parameters: "));
+Serial.println(myLora.sendRawCommand("mac get rx2"));
+
+Serial.print(F("RX1 delay: "));
+Serial.println(myLora.sendRawCommand("mac get rxdelay1"));
+
+Serial.print(F("RX2 delay: "));
+Serial.println(myLora.sendRawCommand("mac get rxdelay2"));
+    Serial.print(F("Join result: "));
+    Serial.println(result);
+
+    Serial.print(F("RN2483 status: "));
+    Serial.println(myLora.sendRawCommand("mac get status"));
+
+    Serial.print(F("RN2483 DevAddr: "));
+    Serial.println(myLora.sendRawCommand("mac get devaddr"));
+    otaaConfigured = true;
+  } else {
+    result = myLora.init();
+  }
+
+  ttnJoined = result;
+  lastJoinAttempt = millis();
+  firstReading = true;
+  lastSample = millis();
 
   if (result) {
-
-    ttnJoined = true;
-
-    Serial.println("Successfully joined TTN!");
-
-    // EU868 DR5. Network settings may
-    // subsequently change the data rate.
-    myLora.setDR(5);
-
-    Serial.println("Data rate set to DR5");
-
-    lastUplink = millis();
-
+    Serial.println(F("Successfully joined TTN!"));
+    // Keep the negotiated/default data rate.
+    // Make the first CBOR status uplink eligible immediately.
+    lastUplink = millis() - UPLINK_INTERVAL;
   } else {
-
-    ttnJoined = false;
-
-    Serial.println("TTN join failed");
-    Serial.println("Will retry later");
+    Serial.println(F("TTN join failed; retry in 60 seconds"));
   }
 }
 
@@ -518,7 +549,7 @@ void sendTTNMessage(uint8_t messageType) {
     0x65, 'A', 'l', 'a', 'r', 'm', (uint8_t)(alarmOut ? 0xF5 : 0xF4)
   };
   size_t n = sizeof(txBuffer);
-  Serial.print("TTN uplink HEX: ");
+  Serial.print(F("TTN uplink HEX: "));
   for (size_t i = 0; i < n; i++) {
     if (txBuffer[i] < 16) Serial.print('0');
     Serial.print(txBuffer[i], HEX);
@@ -532,18 +563,18 @@ void sendTTNMessage(uint8_t messageType) {
 
     case TX_FAIL:
 
-      Serial.println("TTN TX failed");
+      Serial.println(F("TTN TX failed"));
       break;
 
     case TX_SUCCESS:
 
-      Serial.println("TTN TX successful");
+      Serial.println(F("TTN TX successful"));
       break;
 
     case TX_WITH_RX:
     {
-      Serial.println("TTN TX successful");
-      Serial.println("Downlink received!");
+      Serial.println(F("TTN TX successful"));
+      Serial.println(F("Downlink received!"));
 
       String received = myLora.getRx();
 
@@ -553,7 +584,7 @@ void sendTTNMessage(uint8_t messageType) {
 
     default:
 
-      Serial.println("Unknown TX response");
+      Serial.println(F("Unknown TX response"));
       break;
   }
 
@@ -579,22 +610,11 @@ void serviceTTN() {
 
   unsigned long now = millis();
 
-  // Retry joining without an infinite loop.
+  // Avoid blocking the measurement windows with radio operations.
+  if (state == WAITING || state == MEASURING) return;
+
   if (!ttnJoined) {
-
-    if (now - lastJoinAttempt >=
-        JOIN_RETRY_INTERVAL) {
-
-      joinTTN();
-    }
-
-    return;
-  }
-
-  // Don't interrupt the 5-second waiting
-  // or measuring periods with a radio TX.
-  if (state == WAITING ||
-      state == MEASURING) {
+    if (now - lastJoinAttempt >= JOIN_RETRY_INTERVAL) joinTTN();
     return;
   }
 
@@ -626,8 +646,8 @@ void setup() {
   Serial.begin(9600);
   delay(1000);
 
-  Serial.println("Arduino started!");
-  Serial.println("Bike alarm initializing...");
+  Serial.println(F("Arduino started!"));
+  Serial.println(F("Bike alarm initializing..."));
 
   // RGB LED
   pinMode(RED_PIN, OUTPUT);
@@ -642,7 +662,7 @@ void setup() {
   setRGB(0, 0, 0);
 
   // MPU6050
-  Serial.println("Initializing MPU6050...");
+  Serial.println(F("Initializing MPU6050..."));
 
   myWire.begin();
 
@@ -651,7 +671,7 @@ void setup() {
 
   writeRegister(0x1C, 0x00);
 
-  Serial.println("MPU6050 initialized");
+  Serial.println(F("MPU6050 initialized"));
 
   // Initial system state
   state = PASSIVE;
@@ -661,16 +681,11 @@ void setup() {
 
   alarmNotificationPending = false;
 
-  Serial.println("System PASSIVE");
+  Serial.println(F("System PASSIVE"));
 
-  // RN2483
-  loraSerial.begin(9600);
-
-  initializeRadioHardware();
-
+  // RN2483: attempt once; serviceTTN handles retries.
   joinTTN();
-
-  Serial.println("Initialization completed");
+  Serial.println(F("Initialization completed"));
 }
 
 // ALARM STATE MACHINE
@@ -686,7 +701,7 @@ void updateAlarm() {
       resetRequested = false;
       alarmNotificationPending = false;
 
-      Serial.println("Alarm reset by TTN");
+      Serial.println(F("Alarm reset by TTN"));
 
       if (systemArmed) enterMonitoring();
       else enterPassive();
@@ -761,8 +776,8 @@ void updateAlarm() {
 
     if (movement > TRIGGER_THRESHOLD) {
 
-      Serial.println("Movement detected!");
-      Serial.println("Waiting 5 seconds...");
+      Serial.println(F("Movement detected!"));
+      Serial.println(F("Waiting 5 seconds..."));
 
       state = WAITING;
       stateStart = now;
@@ -774,7 +789,7 @@ void updateAlarm() {
 
     if (now - stateStart >= WAIT_TIME) {
 
-      Serial.println("Measuring for 5 seconds...");
+      Serial.println(F("Measuring for 5 seconds..."));
 
       movementSum = 0;
       sampleCount = 0;
@@ -800,9 +815,9 @@ void updateAlarm() {
           movementSum / sampleCount;
       }
 
-      Serial.print("Average movement: ");
+      Serial.print(F("Average movement: "));
       Serial.print(averageMovement, 4);
-      Serial.println(" g");
+      Serial.println(F(" g"));
 
       if (averageMovement > AVERAGE_THRESHOLD) {
 
@@ -810,7 +825,7 @@ void updateAlarm() {
 
       } else {
 
-        Serial.println("No significant movement.");
+        Serial.println(F("No significant movement."));
         enterMonitoring();
       }
     }
