@@ -226,7 +226,7 @@ void setArmedFromTTN(bool armed) {
     Serial.println("TTN command: ARM");
   } else {
     Serial.println("TTN command: DISARM");
-    resetRequested = false;
+    resetRequested = true;
     alarmNotificationPending = false;
   }
 }
@@ -302,37 +302,120 @@ void activateAlarm() {
   Serial.println("TTN alarm notification pending");
 }
 
-// TTN DOWNLINK HANDLING
+// TTN DOWNLINK HANDLING (CBOR encoded as HEX)
+uint8_t colourR = 0, colourG = 0, colourB = 0;
+
+int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// Small bounded CBOR reader for the command schema.
+class CommandReader {
+  const uint8_t *data;
+  size_t length, pos;
+public:
+  CommandReader(const uint8_t *d, size_t n): data(d), length(n), pos(0) {}
+  bool done() { return pos == length; }
+  int take() { return pos < length ? data[pos++] : -1; }
+  bool argument(int ai, uint64_t &v) {
+    if (ai < 24) { v = ai; return true; }
+    if (ai > 27) return false;
+    unsigned n = 1U << (ai - 24);
+    v = 0;
+    while (n--) { int b = take(); if (b < 0) return false; v = (v << 8) | b; }
+    return true;
+  }
+  bool map(uint64_t &n) {
+    int h = take(); return h >= 0 && (h >> 5) == 5 && argument(h & 31, n);
+  }
+  bool key(char *out, size_t cap) {
+    int h = take(); uint64_t n;
+    if (h < 0 || (h >> 5) != 3 || !argument(h & 31, n) || n >= cap || n > length-pos) return false;
+    for (size_t i=0; i<n; i++) { int c=take(); if(c==0) return false; out[i]=(char)c; }
+    out[(size_t)n] = 0; return true;
+  }
+  bool boolean(bool &v) {
+    int h=take(); if(h!=0xF4 && h!=0xF5) return false;
+    v=h==0xF5; return true;
+  }
+  bool number(double &v) {
+    int h=take(); if(h<0) return false;
+    int major=h>>5, ai=h&31; uint64_t bits;
+    if (major==0 || major==1) {
+      if(!argument(ai,bits)) return false;
+      v=major==0 ? (double)bits : -1.0-(double)bits;
+      return true;
+    }
+    if(major!=7 || ai<25 || ai>27 || !argument(ai,bits)) return false;
+    // Decode IEEE-754 without assuming sizeof(double)==8 (AVR).
+    int f=ai==25?10:ai==26?23:52;
+    int e=ai==25?5:ai==26?8:11;
+    int bias=(1<<(e-1))-1;
+    unsigned exponent=(unsigned)((bits>>f)&((1UL<<e)-1));
+    if(exponent==(1UL<<e)-1) return false;
+    uint64_t fraction=bits&((UINT64_C(1)<<f)-1);
+    v=ldexp((double)fraction, -f);
+    if(exponent) v+=1.0;
+    v=ldexp(v, exponent ? (int)exponent-bias : 1-bias);
+    if((bits>>(f+e))&1) v=-v;
+    return isfinite(v);
+  }
+};
+
 void handleDownlink(String received) {
-
-  received.trim();
-  received.toUpperCase();
-
-  Serial.print("TTN downlink HEX: ");
-  Serial.println(received);
-
-  // Commands must be exactly one byte.
-  if (received.length() != 2) {
-    Serial.println("Invalid command length");
+  received.trim(); received.toUpperCase();
+  Serial.print("TTN downlink HEX: "); Serial.println(received);
+  // Keep support for the original one-byte commands.
+  if(received=="01") { setArmedFromTTN(true); return; }
+  if(received=="00") { setArmedFromTTN(false); return; }
+  if(received=="02") { requestResetFromTTN(); return; }
+  uint8_t bytes[64];
+  size_t n=received.length();
+  if(!n || n%2 || n/2>sizeof(bytes)) { Serial.println("Invalid HEX length"); return; }
+  for(size_t i=0;i<n/2;i++) {
+    int a=hexDigit(received[2*i]), b=hexDigit(received[2*i+1]);
+    if(a<0 || b<0) { Serial.println("Invalid HEX"); return; }
+    bytes[i]=(a<<4)|b;
+  }
+  CommandReader reader(bytes,n/2);
+  uint64_t count; char key[16]; bool value;
+  if(!reader.map(count) || count!=1 || !reader.key(key,sizeof(key))) {
+    Serial.println("Invalid CBOR command"); return;
+  }
+  if(!strcmp(key,"Lock") || !strcmp(key,"Alarm") || !strcmp(key,"AlarmOFF")) {
+    if(!reader.boolean(value) || !reader.done()) { Serial.println("Invalid boolean command"); return; }
+    if(!strcmp(key,"Lock")) setArmedFromTTN(value);
+    else if(!strcmp(key,"Alarm") && value) {
+      // Remote alarm works even when unlocked; lock state is preserved.
+      resetRequested=false;
+      if(state!=ALARM) activateAlarm();
+    } else if(!strcmp(key,"Alarm") || value) requestResetFromTTN();
     return;
   }
-
-  if (received == "01") {
-
-    setArmedFromTTN(true);
-
-  } else if (received == "00") {
-
-    setArmedFromTTN(false);
-
-  } else if (received == "02") {
-
-    requestResetFromTTN();
-
-  } else {
-
-    Serial.println("Unknown TTN command");
+  if (strcmp(key,"Colour") && strcmp(key,"value")) {
+    Serial.println("Unknown command"); return;
   }
+  if (!reader.map(count) || count != 3) {
+    Serial.println("Invalid colour object"); return;
+  }
+  double values[3]={0,0,0}; unsigned seen=0;
+  for(unsigned i=0;i<count;i++) {
+    char field[16]; double v;
+    if(!reader.key(field,sizeof(field)) || !reader.number(v)) { Serial.println("Invalid colour field"); return; }
+    int index=-1;
+    if(!strcmp(field,"r")) index=0;
+    if(!strcmp(field,"g")) index=1;
+    if(!strcmp(field,"b")) index=2;
+    if(index<0 || (seen&(1U<<index))) { Serial.println("Unexpected colour field"); return; }
+    if(v<0 || v>255 || floor(v)!=v) { Serial.println("Invalid RGB"); return; }
+    seen|=1U<<index; values[index]=v;
+  }
+  if(!reader.done()) { Serial.println("Trailing CBOR data"); return; }
+  colourR=(uint8_t)values[0]; colourG=(uint8_t)values[1]; colourB=(uint8_t)values[2];
+  if(state!=ALARM) setRGB(colourR>=128,colourG>=128,colourB>=128);
+  Serial.println("Colour updated");
 }
 
 // INITIALIZE RN2483 HARDWARE
@@ -418,30 +501,22 @@ void joinTTN() {
 
 // SEND UPLINK / RECEIVE DOWNLINK
 void sendTTNMessage(uint8_t messageType) {
+  if (!ttnJoined) return;
 
-  if (!ttnJoined)
-    return;
-
-  // Two-byte uplink:
-  // Byte 0 = message type
-  // Byte 1 = current system state
-  uint8_t txBuffer[3];
-
-  txBuffer[0] = messageType;
-  txBuffer[1] = (uint8_t)state;
-  txBuffer[2] = alarmOut ? 1 : 0;
-
-  Serial.print("TTN TX type: 0x");
-  Serial.println(messageType, HEX);
-
-  Serial.print("TTN TX state: ");
-  Serial.println((int)state);
-
-  // This library call is blocking.
-  TX_RETURN_TYPE result = myLora.txBytes(
-    txBuffer,
-    sizeof(txBuffer)
-  );
+  // CBOR: {"Lock": boolean, "Alarm": boolean}
+  uint8_t txBuffer[] = {
+    0xA2,
+    0x64, 'L', 'o', 'c', 'k', (uint8_t)(systemArmed ? 0xF5 : 0xF4),
+    0x65, 'A', 'l', 'a', 'r', 'm', (uint8_t)(alarmOut ? 0xF5 : 0xF4)
+  };
+  size_t n = sizeof(txBuffer);
+  Serial.print("TTN uplink HEX: ");
+  for (size_t i = 0; i < n; i++) {
+    if (txBuffer[i] < 16) Serial.print('0');
+    Serial.print(txBuffer[i], HEX);
+  }
+  Serial.println();
+  TX_RETURN_TYPE result = myLora.txBytes(txBuffer, n);
 
   lastUplink = millis();
 
@@ -485,7 +560,7 @@ void sendTTNMessage(uint8_t messageType) {
   // Only clear pending alarm notifications
   // when the alarm uplink succeeded.
   if (messageType == MSG_ALARM &&
-      result != TX_FAIL) {
+      (result == TX_SUCCESS || result == TX_WITH_RX)) {
 
     alarmNotificationPending = false;
   }
@@ -590,6 +665,25 @@ void updateAlarm() {
 
   unsigned long now = millis();
 
+  // ALARM - LATCHED
+  if (state == ALARM) {
+
+    if (resetRequested) {
+
+      resetRequested = false;
+      alarmNotificationPending = false;
+
+      Serial.println("Alarm reset by TTN");
+
+      if (systemArmed) enterMonitoring();
+      else enterPassive();
+      return;
+    }
+
+    flashRGB();
+    return;
+  }
+
   // DISARMED -> PASSIVE
   if (!systemArmed) {
 
@@ -606,24 +700,6 @@ void updateAlarm() {
   if (state == PASSIVE) {
 
     enterMonitoring();
-    return;
-  }
-
-  // ALARM - LATCHED
-  if (state == ALARM) {
-
-    if (resetRequested) {
-
-      resetRequested = false;
-      alarmNotificationPending = false;
-
-      Serial.println("Alarm reset by TTN");
-
-      enterMonitoring();
-      return;
-    }
-
-    flashRGB();
     return;
   }
 
