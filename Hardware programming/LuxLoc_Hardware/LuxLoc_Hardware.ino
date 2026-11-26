@@ -21,6 +21,10 @@
 #define GREEN_PIN 8
 #define BLUE_PIN 7
 
+// PIEZO BUZZER
+#define BUZZER_PIN 5
+#define BUZZER_FREQUENCY 2000
+
 #define COMMON_ANODE false
 
 // ALARM SETTINGS
@@ -35,8 +39,8 @@
 // TTN SETTINGS
 // Replace with your own OTAA credentials.
 // AppEUI is called JoinEUI in newer TTN consoles.
-const char *appEui = "07C4D5459470B67C";
-const char *appKey = "0E8E0A9532F584F20FD0D3DD3DB1B10C";
+const char *appEui = "CAE28D0314356EB5";
+const char *appKey = "7F65D710F50298B5EFCFA254A00F086C";
 
 // Periodic status uplink every 60 seconds
 #define UPLINK_INTERVAL 60000UL
@@ -236,8 +240,12 @@ void startAlarmTTN(bool active) {
   alarmOut = active;
 
   if (alarmOut) {
+        // Activate Piezo buzzer
+    tone(BUZZER_PIN, BUZZER_FREQUENCY);
     Serial.println("TTN command: Alarm started");
   } else {
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
     Serial.println("TTN command: No Alarm");
   }
 }
@@ -482,11 +490,11 @@ void joinTTN() {
 
     Serial.println("Successfully joined TTN!");
 
-    // EU868 DR4. Network settings may
+    // EU868 DR5. Network settings may
     // subsequently change the data rate.
-    myLora.setDR(4);
+    myLora.setDR(5);
 
-    Serial.println("Data rate set to DR4");
+    Serial.println("Data rate set to DR5");
 
     lastUplink = millis();
 
@@ -625,6 +633,11 @@ void setup() {
   pinMode(RED_PIN, OUTPUT);
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT);
+
+  // PIEZO BUZZER
+  pinMode(BUZZER_PIN, OUTPUT);
+  noTone(BUZZER_PIN);
+  digitalWrite(BUZZER_PIN, LOW);
 
   setRGB(0, 0, 0);
 
